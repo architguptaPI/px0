@@ -66,14 +66,21 @@ func cleanBasePath(p string) string {
 // Server is the main px0 HTTP server handling the web UI, static assets,
 // REST API endpoints, Server-Sent Events (SSE), and workspace services.
 type Server struct {
-	ix        *Index
-	lsp       *lspManager
-	tel       *telemetry.Service // nil in tests; Track is nil-safe
-	agent     *agentManager      // nil unless main wires editing for this session
-	threads   *threadManager    // nil unless editing is wired: threads run on the same harness
-	pr        *prSession        // nil unless main launched this process as `px0 pr ...`
-	diffBase  string            // ref /api/diff and /api/gutter diff against; "HEAD" unless in PR mode
-	prHeadSHA string            // PR mode only: the checked-out PR head commit. Frozen boundary between
+	// wsMu guards workspace swaps (SwitchWorkspace) and diff-base writes. Most
+	// request handlers still read s.ix, s.lsp and s.diffBase without it: px0
+	// is a single-user local tool, and a request that overlaps a switch at
+	// worst answers for the old workspace once.
+	wsMu        sync.Mutex
+	ix          *Index
+	lsp         *lspManager
+	tel         *telemetry.Service // nil in tests; Track is nil-safe
+	agent       *agentManager      // nil unless main wires editing for this session
+	threads     *threadManager     // nil unless editing is wired: threads run on the same harness
+	pr          *prSession         // nil unless main launched this process as `px0 pr ...`
+	diffBase    string             // ref /api/diff and /api/gutter diff against; "HEAD" unless in PR mode or base-branch mode
+	diffMode    string             // "head" (default), "base" (merge-base with base branch), or "custom"
+	diffBaseRef string             // base branch or custom ref name when diffMode != "head"
+	prHeadSHA   string             // PR mode only: the checked-out PR head commit. Frozen boundary between
 	// the PR's own diff (diffBase..prHeadSHA) and the reviewer's local edits
 	// since checkout (prHeadSHA..working tree); refreshed on Pull.
 	gitWatcher *GitWatcher
@@ -226,6 +233,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/merge-message"), s.handlePRMergeMessage)
 	s.mux.HandleFunc(s.routePath("/api/forge/connect"), s.handleForgeConnect)
 	s.mux.HandleFunc(s.routePath("/api/session"), s.handleSession)
+	s.mux.HandleFunc(s.routePath("/api/workspaces"), s.handleWorkspaces)
+	s.mux.HandleFunc(s.routePath("/api/workspaces/switch"), s.handleWorkspaceSwitch)
+	s.mux.HandleFunc(s.routePath("/api/workspaces/roots"), s.handleWorkspaceRoots)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees"), s.handleGitWorktrees)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees/create"), s.handleGitWorktreeCreate)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees/remove"), s.handleGitWorktreeRemove)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees/prune"), s.handleGitWorktreePrune)
+	s.mux.HandleFunc(s.routePath("/api/git/diff-base"), s.handleGitDiffBase)
 }
 
 // NewServer creates and initializes a px0 Server instance, binding index and language servers,
@@ -238,7 +253,7 @@ func NewServer(ix *Index, lsp *lspManager, basePaths ...string) *Server {
 	if len(basePaths) > 0 && basePaths[0] != "" {
 		bp = cleanBasePath(basePaths[0])
 	}
-	s := &Server{ix: ix, lsp: lsp, diffBase: "HEAD", basePath: bp, mux: http.NewServeMux(), streamsDone: make(chan struct{})}
+	s := &Server{ix: ix, lsp: lsp, diffBase: "HEAD", diffMode: "head", basePath: bp, mux: http.NewServeMux(), streamsDone: make(chan struct{})}
 	s.session = newSessionManager(s.basePath, ix.Root())
 	s.gitWatcher = NewGitWatcher(ix)
 	s.gitWatcher.Start(context.Background())
@@ -922,7 +937,7 @@ func (s *Server) handleStatic(sub fs.FS, prefix string) http.Handler {
 	})
 }
 
-func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+func (s *Server) buildMetaMap() map[string]any {
 	n, at, ms := s.ix.Stats()
 	inGit := gitAvailable(s.ix.Root())
 	if inGit && s.ix.Ready() {
@@ -934,6 +949,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	gitCount, gitFiles := s.ix.GitChanges()
+	diffMode, diffBase, diffBaseRef := s.diffState()
 	meta := map[string]any{
 		"root":        s.ix.Root(),
 		"name":        filepath.Base(s.ix.Root()),
@@ -944,6 +960,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"git":         inGit,
 		"gitChanges":  gitCount,
 		"gitFiles":    gitFiles,
+		"diffBase":    diffBase,
+		"diffMode":    diffMode,
+		"diffBaseRef": diffBaseRef,
 		"forge":       s.forgeMeta(),
 		"lspServers":  s.lsp.Available(),
 		"metrics":     getProcessMetrics(s.lsp),
@@ -958,7 +977,11 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	if s.pr != nil {
 		meta["pr"] = s.pr.metaMap(s.ix.PRFiles())
 	}
-	writeJSON(w, meta)
+	return meta
+}
+
+func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.buildMetaMap())
 }
 
 func getProcessMetrics(lsp *lspManager) metrics.ProcessMetrics {

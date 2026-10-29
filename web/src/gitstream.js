@@ -1,4 +1,5 @@
 import { S, apiPost, doc_ } from './state.js';
+import { emit } from './bus.js';
 import { updateSidebarToggleState, patchTreeGitStatus, treeEl, setSidebarMode, hasGitView } from './tree.js';
 import { drawTabs, loadGutter, closeTab, reloadOpenTabs } from './tabs.js';
 import { syncDiffView } from './diff.js';
@@ -76,6 +77,10 @@ export function initGitStream() {
   }, 1000);
 }
 
+export function resetGitStreamState() {
+  lastSig = '';
+}
+
 export function triggerRefresh() {
   if (refreshing) return refreshing;
   refreshing = (async () => {
@@ -126,6 +131,17 @@ function connect() {
       try {
         const data = JSON.parse(e.data);
         updateMetricsDisplay(data);
+      } catch (err) {
+        // Drop malformed frame
+      }
+    });
+
+    eventSource.addEventListener('workspace-switched', e => {
+      markTraffic();
+      lastSig = '';
+      try {
+        const data = JSON.parse(e.data);
+        emit('workspace:switched', data);
       } catch (err) {
         // Drop malformed frame
       }
@@ -208,6 +224,7 @@ export async function handleGitStatus(data) {
   } catch (err) {
     console.error('Failed to update git panel', err);
   }
+  emit('git:status', data);
 
   // Close tabs that were opened in git diff view or currently in diff view if their changes are gone.
   // In PR review mode, tabs should remain open even if clean relative to HEAD.

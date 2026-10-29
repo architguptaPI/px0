@@ -25,12 +25,16 @@ import { submitBatch } from './agent.js';
 import { reindexWorkspace } from './panels.js';
 import { enterEditMode, exitEditMode, saveActiveFile, editTextarea } from './editview.js';
 import { navigateToTips } from './tips.js';
+import { openWorkspaceSwitcher, closeWorkspaceSwitcher } from './workspace-switcher.js';
+import { openWorktreeModal } from './worktrees.js';
 
 /* Each entry lists alternative combos, written as for keyLabel in state.js so
    they show as ⌘/⌥/⇧ on a Mac and Ctrl/Alt/Shift elsewhere. Browsers keep
    Ctrl+W and Cmd+W for themselves, so Alt+W is the close shortcut shown. */
 export const SHORTCUTS = [
   [['Mod+,'], 'Open settings'],
+  [['Alt+O'], 'Switch workspace repository'],
+  [['Alt+Shift+W'], 'Switch / manage Git worktrees'],
   [['Mod+K'], 'Quick search / palette'], [['Mod+P'], 'Go to file'],
   [['Mod+Shift+P'], 'Command palette'], [['Mod+Shift+O'], 'Go to symbol'],
   [['Mod+Shift+F'], 'Search in files'], [['Mod+Shift+R'], 'Refresh workspace'], [['Mod+F'], 'Find in file'],
@@ -181,7 +185,17 @@ export function initShortcuts() {
     // Diff view of the open file (git only; fails quiet when git is off).
     if (mod && !e.shiftKey && (e.key === 'd' || e.key === 'D')) { if (S.meta?.git) { e.preventDefault(); toggleDiff(); } return; }
     // Alt shortcuts match e.code: on a Mac, Option+letter types a symbol, so e.key is not the letter.
-    if ((mod && (e.key === 'w' || e.key === 'W')) || (e.altKey && e.code === 'KeyW')) {
+    if (e.altKey && !mod && !e.shiftKey && e.code === 'KeyO') {
+      e.preventDefault();
+      openWorkspaceSwitcher();
+      return;
+    }
+    if (e.altKey && e.shiftKey && !mod && e.code === 'KeyW') {
+      e.preventDefault();
+      openWorktreeModal('list');
+      return;
+    }
+    if ((mod && !e.shiftKey && (e.key === 'w' || e.key === 'W')) || (e.altKey && !e.shiftKey && e.code === 'KeyW')) {
       e.preventDefault();
       e.stopPropagation();
       if (S.active >= 0) closeTab(S.active);

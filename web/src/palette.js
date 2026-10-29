@@ -23,6 +23,8 @@ import { getSelectedRangeInfo } from './selbar.js';
 import { enterEditMode, exitEditMode, saveActiveFile } from './editview.js';
 import { promptNewItem } from './newitem.js';
 import { navigateToTips, showTipWidget } from './tips.js';
+import { openWorkspaceSwitcher } from './workspace-switcher.js';
+import { openWorktreeModal, toggleWorktreeBaseDiff } from './worktrees.js';
 
 export const overlay = $('#overlay');
 export const palInput = $('#pal');
@@ -103,6 +105,11 @@ export const COMMANDS = [
   { name: 'Threads: Show All', run: () => showRightInspector('threads') },
   { name: withKeys('Threads: Start New Thread ({Alt+T} on a selection)'), run: () => newThread(null) },
   { name: 'Threads: Delete Current Thread', run: deleteCurrentThread },
+  { name: withKeys('Workspace: Switch Repository… ({Alt+O})'), run: () => openWorkspaceSwitcher() },
+  { name: 'Workspace: Configure Repository Roots…', run: () => openWorkspaceSwitcher({ focusRoots: true }) },
+  { name: withKeys('Git: Switch or Manage Worktrees… ({Alt+Shift+W})'), run: () => openWorktreeModal('list') },
+  { name: 'Git: Create New Worktree…', run: () => openWorktreeModal('create') },
+  { name: 'Git: Toggle Branch vs Base Diff Review', run: () => toggleWorktreeBaseDiff() },
   { name: 'Git: Open Pull Request…', run: () => openPalette('openpr', '') },
   { name: 'Preferences: Toggle Vim Keybindings', run: () => setVimModeEnabled(!isVimEnabled(), true) },
   { name: 'Help: Vim Keybindings Cheat Sheet', run: showVimHelp },

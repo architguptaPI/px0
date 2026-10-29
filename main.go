@@ -264,6 +264,7 @@ func main() {
 	// Index workspace asynchronously so the server and UI respond in <1ms.
 	go func() {
 		ix.Build()
+		pxSrv.autoConfigureWorktreeDiffBase()
 		if pxSrv.gitWatcher != nil {
 			pxSrv.gitWatcher.Trigger()
 		}

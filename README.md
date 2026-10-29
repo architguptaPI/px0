@@ -20,6 +20,9 @@ See full performance benchmarks and comparisons at [px0.ai/benchmarks](https://p
 ## Features
 
 - Review workbench: Run `px0` with no arguments to open a unified launchpad on a single port, browse projects, and keep unsubmitted review drafts across sessions.
+- Single-window repository switching: Hot-swap between any discovered Git repository (`Alt+O` or click the header repo name) without changing ports or URLs, with configurable scan roots (`workspace.roots`).
+- Git worktrees & Claude session review: Auto-discover linked Git worktrees and Claude Desktop/Code worktrees (`.claude/worktrees`, `~/.claude/worktrees`), create/switch/prune worktrees (`Alt+Shift+W`), and automatically diff worktree branches against their `merge-base` with `main`/`master` so committed agent sessions show up alongside uncommitted changes.
+  See [docs/features/mac-workspace-and-worktrees.md](docs/features/mac-workspace-and-worktrees.md) for a step-by-step Mac guide.
 - Pull request reviews & Git control: Review GitHub, GitLab, Gitea/Forgejo, and Bitbucket Cloud PRs directly (`px0 <pr-url>`), inspect scoped merge-base diffs, draft inline comments, 1-click agentic rebase for conflict resolution, squash and merge, browse commit diffs, and stage, commit, or push from the browser.
 - Multi-turn agent threads: Anchor conversations to code ranges (`Alt+T`), stream live tool execution over Server-Sent Events, queue batch inline edits across files (`Alt+E`), and dispatch to Claude Code, Cursor Agent, Antigravity, OpenCode, Codex, Aider, or Goose.
 - Unpushed commit review: Read the commits your branch is ahead of its tracking branch by, one file diff at a time, before you push them.
