@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"px0/internal/settings"
 )
@@ -346,11 +347,25 @@ func discoverStandaloneClaudeWorktrees(mainRoot, normCurrentRoot string, seenPat
 // enriched with source classification, dirty counts, and base-branch divergence metrics.
 func gitListWorktrees(root string) []GitWorktree {
 	wts, baseBranch := gitListWorktreesBasic(root)
+	// Each worktree needs about six git processes. Run them in parallel:
+	// a repo with dozens of Claude sessions took seconds one after another.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, worktreeDetailWorkers)
 	for i := range wts {
-		populateWorktreeDetails(&wts[i], baseBranch)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(wt *GitWorktree) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			populateWorktreeDetails(wt, baseBranch)
+		}(&wts[i])
 	}
+	wg.Wait()
 	return wts
 }
+
+// worktreeDetailWorkers bounds the parallel detail queries in gitListWorktrees.
+const worktreeDetailWorkers = 8
 
 // gitListWorktreesBasic lists worktrees and the detected base branch without
 // the per-worktree detail queries (log, status, merge-base, diff). Each detail

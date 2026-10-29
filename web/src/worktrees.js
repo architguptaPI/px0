@@ -1114,13 +1114,13 @@ export async function refreshWorktrees() {
 
 // Git status events arrive up to once a second, and each /api/git/worktrees
 // call runs several git processes per worktree. Coalesce event-driven
-// refreshes to at most one per WORKTREE_REFRESH_MS.
-const WORKTREE_REFRESH_MS = 5000;
+// refreshes to at most one per WORKTREE_REFRESH_MS, and skip hidden tabs.
+const WORKTREE_REFRESH_MS = 15000;
 let worktreeRefreshTimer = null;
 let lastWorktreeRefresh = 0;
 
 export function scheduleWorktreesRefresh() {
-  if (worktreeRefreshTimer) return;
+  if (worktreeRefreshTimer || document.hidden) return;
   const wait = Math.max(0, lastWorktreeRefresh + WORKTREE_REFRESH_MS - Date.now());
   worktreeRefreshTimer = setTimeout(async () => {
     try {

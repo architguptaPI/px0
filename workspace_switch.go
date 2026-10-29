@@ -472,6 +472,11 @@ func (s *Server) listWorkspaces() map[string]any {
 
 // SwitchWorkspace hot-swaps the active workspace root in-place without restarting the server.
 func (s *Server) SwitchWorkspace(targetPath string) (map[string]any, error) {
+	if s.workbenchURL != "" {
+		// The workbench maps /w/<id>/ to one root; the page opens the target
+		// through the workbench instead (workspace-switcher.js).
+		return nil, fmt.Errorf("this px0 runs under the workbench: open the repository from there")
+	}
 	cleaned := expandWorkspaceHome(targetPath)
 	if cleaned == "" {
 		return nil, fmt.Errorf("missing workspace path")

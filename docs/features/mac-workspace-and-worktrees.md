@@ -9,9 +9,19 @@ This guide is for this fork. It covers two features:
 
 You need Go, Node and Git. Homebrew gives you all three.
 
+The features are on the `explore_px0_features` branch, not on `master`. Build from that branch. If you build from `master`, Option+O and Option+Shift+W do nothing.
+
 ```bash
 cd ~/Workspace/px0
+git switch explore_px0_features
+git pull
 make build
+```
+
+To check that your binary has the features, run this. The result must be more than 0:
+
+```bash
+strings "$(command -v px0)" | grep -c api/workspaces/switch
 ```
 
 `make build` bundles the web code and builds `./px0`. Then it replaces each `px0` binary that it finds on your `PATH` (for example `~/.local/bin/px0`).
@@ -40,7 +50,14 @@ Then open a new terminal tab, or run `source ~/.zshrc`.
 
 ## 2. Start one workspace
 
-Start px0 on any repository. Use the same window for all repositories after that.
+After each new build, stop px0 (Ctrl+C, or `pkill -x px0`) and start it again. A running px0 keeps the old code.
+
+You can start px0 in two ways. Both work with these features.
+
+- `px0` with no folder starts the **workbench**. Each repository gets its own page at `http://127.0.0.1:7777/w/<id>/`. When you switch repository, px0 opens the page of the new repository.
+- `px0 <folder>` starts one repository. When you switch repository, the same page changes in place.
+
+Start px0 on any repository:
 
 ```bash
 px0 ~/Workspace/px0
@@ -127,6 +144,7 @@ In the Git Worktrees window:
 
 ## Known limits
 
+- The worktree list runs several git commands for each worktree. With 40 worktrees it takes about 1 second to load.
 - When you switch, px0 indexes the new repository before it replies. A very large folder makes the switch slow.
 - Most request handlers do not lock during a switch. A request that runs during a switch can answer once for the old repository. Reload the page if a panel looks wrong after a switch.
 - px0 calculates the merge-base when you open a worktree. If the session rebases its branch after that, switch to the worktree again to recalculate it.

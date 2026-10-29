@@ -591,11 +591,29 @@ export function closeWorkspaceSwitcher() {
   modalEl.hidden = true;
 }
 
+// Under the workbench (`px0` with no folder), each repo runs as its own child
+// at /w/<id>/. A child must not change its own root, or its URL would name
+// the wrong repo. Ask the workbench to open the target and go to its page.
+async function openInWorkbench(target) {
+  const base = S.meta.workbench.endsWith('/') ? S.meta.workbench : S.meta.workbench + '/';
+  const res = await fetch(base + 'api/wb/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.href) throw new Error(data.error || `Could not open ${target}`);
+  closeWorkspaceSwitcher();
+  window.location.href = data.href;
+  return data;
+}
+
 export async function switchWorkspaceTo(path) {
   const target = (path || '').trim();
   if (!target || wsState.switching) return null;
   wsState.switching = true;
   try {
+    if (S.meta?.workbench) return await openInWorkbench(target);
     const res = await apiPostJson('api/workspaces/switch', { path: target });
     closeWorkspaceSwitcher();
 
