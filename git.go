@@ -1470,6 +1470,7 @@ type GitWatcher struct {
 	root string
 
 	mu      sync.Mutex
+	gitdir  string
 	clients map[chan []byte]struct{}
 	active  atomic.Int32
 
@@ -1516,13 +1517,59 @@ func (gw *GitWatcher) Start(ctx context.Context) {
 		return
 	}
 
-	var gitdir string
-	if gitAvailable(gw.root) {
-		gitdir = gitDir(gw.root)
-		gw.recordGitMeta(gitdir)
+	gw.mu.Lock()
+	root := gw.root
+	gw.mu.Unlock()
+	if gitAvailable(root) {
+		gd := gitDir(root)
+		gw.mu.Lock()
+		gw.gitdir = gd
+		gw.recordGitMeta(gd)
+		gw.mu.Unlock()
 	}
 
-	go gw.loop(ctx, gitdir)
+	go gw.loop(ctx)
+}
+
+// Reset switches the GitWatcher to monitor a new workspace Index without dropping
+// connected SSE clients, and triggers an immediate refresh.
+func (gw *GitWatcher) Reset(ix *Index) {
+	gw.mu.Lock()
+	gw.ix = ix
+	gw.root = ix.Root()
+	gw.gitdir = ""
+	if !gitDisabled && gitAvailable(gw.root) {
+		gw.gitdir = gitDir(gw.root)
+	}
+	gw.lastIndexMod = time.Time{}
+	gw.lastIndexSize = 0
+	gw.lastHeadMod = time.Time{}
+	gw.lastLogsMod = time.Time{}
+	gw.lastFetchMod = time.Time{}
+	gw.lastPackedMod = time.Time{}
+	gw.lastHeadCommit = ""
+	gw.lastAhead = 0
+	gw.lastBehind = 0
+	gw.lastRewritten = false
+	gw.lastPushedHead = ""
+	gw.lastBranch = ""
+	gw.lastCommits = nil
+	gw.lastCommitsURL = ""
+	gw.hasMetaCache = false
+	gw.lastReady = ix.Ready()
+	gw.lastInGit = gitAvailable(gw.root)
+	gw.mu.Unlock()
+	gw.Trigger()
+}
+
+// BroadcastEvent sends a custom named SSE event with a JSON payload to all active subscribers.
+func (gw *GitWatcher) BroadcastEvent(event string, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return
+	}
+	msg := []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", event, data))
+	gw.broadcast(msg)
 }
 
 func (gw *GitWatcher) Stop() {
@@ -1591,7 +1638,7 @@ func (gw *GitWatcher) recordGitMeta(gitdir string) bool {
 	return changed
 }
 
-func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
+func (gw *GitWatcher) loop(ctx context.Context) {
 	metaTicker := time.NewTicker(1 * time.Second)
 	defer metaTicker.Stop()
 
@@ -1610,6 +1657,15 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 		}
 	}
 
+	currentGitDir := func() string {
+		gw.mu.Lock()
+		defer gw.mu.Unlock()
+		if gw.gitdir == "" && gitAvailable(gw.root) {
+			gw.gitdir = gitDir(gw.root)
+		}
+		return gw.gitdir
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1621,10 +1677,11 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 			// Fast path: check .git metadata (HEAD, index, packed-refs).
 			// If touched by git CLI (commit, checkout, add, etc.), refresh immediately.
 			if gw.active.Load() > 0 {
-				if gitdir == "" && gitAvailable(gw.root) {
-					gitdir = gitDir(gw.root)
-				}
-				if gw.recordGitMeta(gitdir) {
+				gitdir := currentGitDir()
+				gw.mu.Lock()
+				metaChanged := gw.recordGitMeta(gitdir)
+				gw.mu.Unlock()
+				if metaChanged {
 					unchangedStreak = 0
 					resetInterval(1 * time.Second)
 					gw.checkAndBroadcast()
@@ -1635,10 +1692,10 @@ func (gw *GitWatcher) loop(ctx context.Context, gitdir string) {
 			// Worktree path: check for modifications in files outside git CLI.
 			// Only run when at least one client is actively listening.
 			if gw.active.Load() > 0 {
-				if gitdir == "" && gitAvailable(gw.root) {
-					gitdir = gitDir(gw.root)
-				}
+				gitdir := currentGitDir()
+				gw.mu.Lock()
 				metaDirty := gw.recordGitMeta(gitdir)
+				gw.mu.Unlock()
 				start := time.Now()
 				_, changed := gw.refreshInternal(!metaDirty)
 				dur := time.Since(start)
@@ -1689,9 +1746,14 @@ func (gw *GitWatcher) Refresh() GitStatusPayload {
 }
 
 func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool) {
-	ready := gw.ix.Ready()
-	inGit := gitAvailable(gw.root)
-	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := gw.ix.UpdateGitStatus()
+	gw.mu.Lock()
+	ix := gw.ix
+	root := gw.root
+	gw.mu.Unlock()
+
+	ready := ix.Ready()
+	inGit := gitAvailable(root)
+	count, files, changed, statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs := ix.UpdateGitStatus()
 
 	gw.mu.Lock()
 	if ready != gw.lastReady || inGit != gw.lastInGit {
@@ -1707,7 +1769,7 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 	var rewritten bool
 	var branch, commitsURL string
 	if inGit {
-		pushedHead := gw.ix.PushedHead()
+		pushedHead := ix.PushedHead()
 		gw.mu.Lock()
 		canReuseMeta := worktreeOnly && gw.hasMetaCache && gw.lastPushedHead == pushedHead
 		if canReuseMeta {
@@ -1721,17 +1783,17 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 		gw.mu.Unlock()
 
 		if !canReuseMeta {
-			recentCommits = gitRecentCommits(gw.root, 5)
+			recentCommits = gitRecentCommits(root, 5)
 			headCommit := ""
 			if len(recentCommits) > 0 {
 				headCommit = recentCommits[0].Hash
 			}
-			ahead, behind = gw.aheadBehind()
+			ahead, behind = gw.aheadBehindFor(ix, root)
 			if validSHA(pushedHead) && ahead > 0 {
-				rewritten = !gitIsAncestor(gw.root, pushedHead, "HEAD")
+				rewritten = !gitIsAncestor(root, pushedHead, "HEAD")
 			}
-			branch = gitCurrentBranch(gw.root)
-			commitsURL = gitCommitsWebURL(gw.root, branch)
+			branch = gitCurrentBranch(root)
+			commitsURL = gitCommitsWebURL(root, branch)
 
 			gw.mu.Lock()
 			if headCommit != gw.lastHeadCommit || branch != gw.lastBranch || ahead != gw.lastAhead || behind != gw.lastBehind || rewritten != gw.lastRewritten {
@@ -1783,10 +1845,18 @@ func (gw *GitWatcher) refreshInternal(worktreeOnly bool) (GitStatusPayload, bool
 // PR head it was checked out at (or last pushed to) -- exactly the reviewer's
 // own commits. Behind stays 0 there: knowing it needs a fetch, which Pull does.
 func (gw *GitWatcher) aheadBehind() (ahead, behind int) {
-	if head := gw.ix.PushedHead(); head != "" {
-		return gitCountSince(gw.root, head), 0
+	gw.mu.Lock()
+	ix := gw.ix
+	root := gw.root
+	gw.mu.Unlock()
+	return gw.aheadBehindFor(ix, root)
+}
+
+func (gw *GitWatcher) aheadBehindFor(ix *Index, root string) (ahead, behind int) {
+	if head := ix.PushedHead(); head != "" {
+		return gitCountSince(root, head), 0
 	}
-	ahead, behind, _ = gitAheadBehind(gw.root)
+	ahead, behind, _ = gitAheadBehind(root)
 	return ahead, behind
 }
 
@@ -1814,7 +1884,10 @@ func (gw *GitWatcher) Subscribe() (<-chan []byte, func()) {
 	ch := make(chan []byte, 16)
 
 	// Immediately send current state to newly connected client
-	inGit := gitAvailable(gw.root)
+	gw.mu.Lock()
+	root := gw.root
+	gw.mu.Unlock()
+	inGit := gitAvailable(root)
 	var initialMsg []byte
 	if inGit {
 		payload := gw.Refresh()

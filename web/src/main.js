@@ -1,7 +1,8 @@
 // web/src/main.js
 import { $, S, api, applyKeyLabels } from './state.js';
+import { on } from './bus.js';
 import { measure, layout, render, initRenderer, updateEditorOptionControls } from './renderer.js';
-import { initTabs, openFile, switchTab } from './tabs.js';
+import { initTabs, openFile, switchTab, closeAllTabs } from './tabs.js';
 import { initCursor } from './cursor.js';
 import { initHover } from './hover.js';
 import { initSelectionBar } from './selbar.js';
@@ -23,7 +24,7 @@ import { initMetrics, initLspMenu, refreshLspMenu, initStatusFit, updateMetricsD
 import { initSettings } from './settings.js';
 import { initVim } from './vim.js';
 import { initImageViewer } from './imageview.js';
-import { initGitStream, triggerRefresh } from './gitstream.js';
+import { initGitStream, triggerRefresh, resetGitStreamState } from './gitstream.js';
 import { initGitPanel, syncGitPanelMeta } from './gitpanel.js';
 import { initPR } from './pr.js';
 import { initLineComment } from './linecomment.js';
@@ -33,6 +34,8 @@ import { initEditView } from './editview.js';
 import { initNewItem } from './newitem.js';
 import { initTips, startTipsAsync } from './tips.js';
 import { initReviewFlow } from './reviewflow.js';
+import { initWorkspaceSwitcher, switchWorkspaceTo } from './workspace-switcher.js';
+import { initWorktrees, refreshWorktrees } from './worktrees.js';
 
 // Initialize all subsystems
 initRenderer();
@@ -152,6 +155,58 @@ initPRScope();
     }
   };
 
+  const applyWorkspaceReload = async (newMeta) => {
+    resetGitStreamState();
+    S.meta = newMeta || (await api('/api/meta'));
+    closeAllTabs();
+    if (S.meta.metrics) updateMetricsDisplay(S.meta.metrics);
+    refreshLspMenu();
+    updateSidebarToggleState();
+    syncGitPanelMeta();
+    applyAgentMeta();
+    initPR();
+    document.title = S.meta.name + ' - px0';
+    $('#root-name').textContent = S.meta.name;
+    $('#root-name').title = S.meta.root;
+    updateStatus();
+
+    setAutoRevealSuppressed(true);
+    await refreshTree();
+    await refreshWorktrees();
+    await triggerRefresh();
+    const switchedHasGit = await applyGitSidebarState();
+    if (switchedHasGit) await selectChangedFileTab();
+    if (inGitMode()) {
+      await expandDirtyDirs();
+      const activeDoc = S.tabs[S.active];
+      if (activeDoc?.path) await revealFile(activeDoc.path);
+    } else {
+      collapseAllDirs();
+    }
+    setAutoRevealSuppressed(false);
+    loadAgentAsync();
+  };
+
+  initWorkspaceSwitcher({
+    onSwitched: async (meta) => {
+      await applyWorkspaceReload(meta);
+    },
+  });
+  initWorktrees({
+    onSwitchWorkspace: async (path) => {
+      await switchWorkspaceTo(path);
+    },
+    onDiffBaseChanged: async (res) => {
+      if (res && res.gitChanges > 0 && S.tabs.length === 0) {
+        await selectChangedFileTab();
+      }
+    },
+  });
+  await refreshWorktrees();
+  on('git:status', () => {
+    refreshWorktrees();
+  });
+
   let hasGitChanges = await applyGitSidebarState();
 
   const params = new URLSearchParams(window.location.search);
@@ -198,6 +253,7 @@ initPRScope();
           updateStatus();
           setAutoRevealSuppressed(true);
           await refreshTree();
+          await refreshWorktrees();
           await triggerRefresh();
           if (!initialPath) {
             hasGitChanges = await applyGitSidebarState();
