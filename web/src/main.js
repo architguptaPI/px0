@@ -34,8 +34,8 @@ import { initEditView } from './editview.js';
 import { initNewItem } from './newitem.js';
 import { initTips, startTipsAsync } from './tips.js';
 import { initReviewFlow } from './reviewflow.js';
-import { initWorkspaceSwitcher, switchWorkspaceTo } from './workspace-switcher.js';
-import { initWorktrees, refreshWorktrees } from './worktrees.js';
+import { initWorkspaceSwitcher, switchWorkspaceTo, isWorkspaceSwitching } from './workspace-switcher.js';
+import { initWorktrees, refreshWorktrees, scheduleWorktreesRefresh } from './worktrees.js';
 
 // Initialize all subsystems
 initRenderer();
@@ -159,6 +159,7 @@ initPRScope();
     resetGitStreamState();
     S.meta = newMeta || (await api('/api/meta'));
     closeAllTabs();
+    if (!S.meta.pr) document.body.classList.remove('pr-mode');
     if (S.meta.metrics) updateMetricsDisplay(S.meta.metrics);
     refreshLspMenu();
     updateSidebarToggleState();
@@ -203,8 +204,12 @@ initPRScope();
     },
   });
   await refreshWorktrees();
-  on('git:status', () => {
-    refreshWorktrees();
+  on('git:status', scheduleWorktreesRefresh);
+  // Another tab (or another window) switched the shared server: follow it.
+  // This tab's own switch reloads through onSwitched, so skip it here.
+  on('workspace:switched', async (data) => {
+    if (isWorkspaceSwitching() || !data?.root || data.root === S.meta?.root) return;
+    await applyWorkspaceReload(null);
   });
 
   let hasGitChanges = await applyGitSidebarState();

@@ -66,6 +66,10 @@ func cleanBasePath(p string) string {
 // Server is the main px0 HTTP server handling the web UI, static assets,
 // REST API endpoints, Server-Sent Events (SSE), and workspace services.
 type Server struct {
+	// wsMu guards workspace swaps (SwitchWorkspace) and diff-base writes. Most
+	// request handlers still read s.ix, s.lsp and s.diffBase without it: px0
+	// is a single-user local tool, and a request that overlaps a switch at
+	// worst answers for the old workspace once.
 	wsMu        sync.Mutex
 	ix          *Index
 	lsp         *lspManager
@@ -945,10 +949,7 @@ func (s *Server) buildMetaMap() map[string]any {
 		}
 	}
 	gitCount, gitFiles := s.ix.GitChanges()
-	diffMode := s.diffMode
-	if diffMode == "" {
-		diffMode = "head"
-	}
+	diffMode, diffBase, diffBaseRef := s.diffState()
 	meta := map[string]any{
 		"root":        s.ix.Root(),
 		"name":        filepath.Base(s.ix.Root()),
@@ -959,9 +960,9 @@ func (s *Server) buildMetaMap() map[string]any {
 		"git":         inGit,
 		"gitChanges":  gitCount,
 		"gitFiles":    gitFiles,
-		"diffBase":    s.diffBase,
+		"diffBase":    diffBase,
 		"diffMode":    diffMode,
-		"diffBaseRef": s.diffBaseRef,
+		"diffBaseRef": diffBaseRef,
 		"forge":       s.forgeMeta(),
 		"lspServers":  s.lsp.Available(),
 		"metrics":     getProcessMetrics(s.lsp),

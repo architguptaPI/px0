@@ -622,6 +622,11 @@ export async function switchWorkspaceTo(path) {
   }
 }
 
+// True while this tab has a switch request in flight.
+export function isWorkspaceSwitching() {
+  return wsState.switching;
+}
+
 export function initWorkspaceSwitcher({ onSwitched } = {}) {
   if (typeof onSwitched === 'function') {
     onSwitchedCallback = onSwitched;

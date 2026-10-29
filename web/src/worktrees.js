@@ -1112,6 +1112,26 @@ export async function refreshWorktrees() {
   return worktreeState;
 }
 
+// Git status events arrive up to once a second, and each /api/git/worktrees
+// call runs several git processes per worktree. Coalesce event-driven
+// refreshes to at most one per WORKTREE_REFRESH_MS.
+const WORKTREE_REFRESH_MS = 5000;
+let worktreeRefreshTimer = null;
+let lastWorktreeRefresh = 0;
+
+export function scheduleWorktreesRefresh() {
+  if (worktreeRefreshTimer) return;
+  const wait = Math.max(0, lastWorktreeRefresh + WORKTREE_REFRESH_MS - Date.now());
+  worktreeRefreshTimer = setTimeout(async () => {
+    try {
+      await refreshWorktrees();
+    } finally {
+      lastWorktreeRefresh = Date.now();
+      worktreeRefreshTimer = null;
+    }
+  }, wait);
+}
+
 export function getWorktreesState() {
   return worktreeState;
 }

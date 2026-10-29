@@ -161,10 +161,10 @@ func classifyWorktreeSource(wtPath, branch string, isMain bool, px0Dirs []string
 	lowPath := strings.ToLower(filepath.ToSlash(wtPath))
 	lowBranch := strings.ToLower(branch)
 
-	if strings.Contains(lowPath, "/.claude/") ||
-		strings.HasSuffix(lowPath, "/.claude") ||
-		strings.Contains(lowPath, "claude") ||
-		strings.Contains(lowBranch, "claude") ||
+	// Match Claude's own worktree folders and branch names only. A plain
+	// substring test on "claude" would tag any repo whose path holds the word.
+	if strings.Contains(lowPath, "/.claude/worktrees/") ||
+		strings.HasPrefix(lowBranch, "claude/") ||
 		strings.Contains(lowBranch, "worktree-") ||
 		strings.Contains(lowPath, ".gemini/antigravity/worktrees") {
 		return "claude"
@@ -345,9 +345,21 @@ func discoverStandaloneClaudeWorktrees(mainRoot, normCurrentRoot string, seenPat
 // gitListWorktrees returns all Git worktrees associated with the repository at root,
 // enriched with source classification, dirty counts, and base-branch divergence metrics.
 func gitListWorktrees(root string) []GitWorktree {
+	wts, baseBranch := gitListWorktreesBasic(root)
+	for i := range wts {
+		populateWorktreeDetails(&wts[i], baseBranch)
+	}
+	return wts
+}
+
+// gitListWorktreesBasic lists worktrees and the detected base branch without
+// the per-worktree detail queries (log, status, merge-base, diff). Each detail
+// query spawns several git processes per worktree, so callers that only need
+// paths and flags use this form.
+func gitListWorktreesBasic(root string) ([]GitWorktree, string) {
 	probe := gitProbe(root)
 	if !probe.ok {
-		return []GitWorktree{}
+		return []GitWorktree{}, ""
 	}
 
 	normCurrentRoot := evalWorktreePath(probe.toplevel)
@@ -357,7 +369,7 @@ func gitListWorktrees(root string) []GitWorktree {
 
 	out, err := runGitNoPrompt(root, "worktree", "list", "--porcelain")
 	if err != nil {
-		return []GitWorktree{}
+		return []GitWorktree{}, ""
 	}
 
 	var px0Dirs []string
@@ -442,11 +454,7 @@ func gitListWorktrees(root string) []GitWorktree {
 		baseBranch = worktrees[0].Branch
 	}
 
-	for i := range worktrees {
-		populateWorktreeDetails(&worktrees[i], baseBranch)
-	}
-
-	return worktrees
+	return worktrees, baseBranch
 }
 
 // defaultWorktreeParentDir returns the clean parent directory where new worktrees
@@ -455,12 +463,8 @@ func defaultWorktreeParentDir(mainRoot string) string {
 	if cfg := settings.Read(); cfg.GitWorktreeDir != nil && strings.TrimSpace(*cfg.GitWorktreeDir) != "" {
 		return expandWorktreeHome(*cfg.GitWorktreeDir)
 	}
-	if mainRoot != "" {
-		claudeWT := filepath.Join(mainRoot, ".claude", "worktrees")
-		if info, err := os.Stat(claudeWT); err == nil && info.IsDir() {
-			return claudeWT
-		}
-	}
+	// Never default into <repo>/.claude/worktrees: Claude Desktop owns that
+	// folder, and px0 worktrees there would show up as Claude sessions.
 	repoName := "repo"
 	if mainRoot != "" {
 		repoName = filepath.Base(filepath.Clean(mainRoot))
@@ -506,7 +510,7 @@ func sanitizeWorktreeSlug(branch string) string {
 
 // gitMainWorktreeRoot returns the main worktree path for the repository containing root.
 func gitMainWorktreeRoot(root string) string {
-	wts := gitListWorktrees(root)
+	wts, _ := gitListWorktreesBasic(root)
 	for _, wt := range wts {
 		if wt.IsMain && wt.Path != "" {
 			return wt.Path
@@ -595,7 +599,7 @@ func gitRemoveWorktree(root, targetPath string, force bool) error {
 	normTarget := evalWorktreePath(targetPath)
 	cleanTarget := filepath.Clean(targetPath)
 
-	wts := gitListWorktrees(root)
+	wts, _ := gitListWorktreesBasic(root)
 	var matched *GitWorktree
 	for i := range wts {
 		wt := &wts[i]
@@ -651,6 +655,13 @@ func gitPruneWorktrees(root string) error {
 // and refreshes the index and git watcher so file diffs, gutter markers, and the
 // Git sidebar reflect the chosen base.
 func (s *Server) setDiffBaseMode(mode, ref string) (map[string]any, error) {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	return s.setDiffBaseModeLocked(mode, ref)
+}
+
+// setDiffBaseModeLocked is setDiffBaseMode for callers that already hold wsMu.
+func (s *Server) setDiffBaseModeLocked(mode, ref string) (map[string]any, error) {
 	if s.ix == nil {
 		return nil, errors.New("workspace index not initialized")
 	}
@@ -739,15 +750,32 @@ func (s *Server) setDiffBaseMode(mode, ref string) (map[string]any, error) {
 	}, nil
 }
 
-// applyDiffBaseMode is an alias for setDiffBaseMode for callers that use either name.
-func (s *Server) applyDiffBaseMode(mode, customRef string) (map[string]any, error) {
-	return s.setDiffBaseMode(mode, customRef)
+// diffState returns the diff mode, base commit, and base ref under wsMu.
+func (s *Server) diffState() (mode, base, ref string) {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	mode, base, ref = s.diffMode, s.diffBase, s.diffBaseRef
+	if mode == "" {
+		mode = "head"
+	}
+	if base == "" {
+		base = "HEAD"
+	}
+	return mode, base, ref
 }
 
 // autoConfigureWorktreeDiffBase automatically enables base-branch diff mode when
 // opening or switching into a linked worktree that has commits ahead of the base
 // branch (unless disabled by the git.worktreeAutoBaseDiff setting).
 func (s *Server) autoConfigureWorktreeDiffBase() {
+	s.wsMu.Lock()
+	defer s.wsMu.Unlock()
+	s.autoConfigureWorktreeDiffBaseLocked()
+}
+
+// autoConfigureWorktreeDiffBaseLocked is autoConfigureWorktreeDiffBase for
+// callers that already hold wsMu.
+func (s *Server) autoConfigureWorktreeDiffBaseLocked() {
 	if s.ix == nil || s.pr != nil {
 		return
 	}
@@ -758,21 +786,23 @@ func (s *Server) autoConfigureWorktreeDiffBase() {
 	cfg := settings.Read()
 	autoBase := cfg.GitWorktreeAutoBaseDiff == nil || *cfg.GitWorktreeAutoBaseDiff
 
-	wts := gitListWorktrees(root)
+	// Only the current worktree needs detail queries.
+	wts, baseBranch := gitListWorktreesBasic(root)
 	var current *GitWorktree
 	for i := range wts {
 		if wts[i].IsCurrent {
 			current = &wts[i]
+			populateWorktreeDetails(current, baseBranch)
 			break
 		}
 	}
 
 	if current != nil && !current.IsMain && current.AheadOfBase > 0 && current.BaseMergeSHA != "" && autoBase {
-		_, _ = s.setDiffBaseMode("base", current.BaseBranch)
+		_, _ = s.setDiffBaseModeLocked("base", current.BaseBranch)
 		return
 	}
 	if s.diffMode == "base" && (current == nil || current.IsMain || current.AheadOfBase == 0) {
-		_, _ = s.setDiffBaseMode("head", "")
+		_, _ = s.setDiffBaseModeLocked("head", "")
 	}
 }
 
@@ -791,14 +821,7 @@ func (s *Server) handleGitWorktrees(w http.ResponseWriter, r *http.Request) {
 	cfg := settings.Read()
 	autoBaseDiff := cfg.GitWorktreeAutoBaseDiff == nil || *cfg.GitWorktreeAutoBaseDiff
 
-	mode := s.diffMode
-	if mode == "" {
-		mode = "head"
-	}
-	diffBase := s.diffBase
-	if diffBase == "" {
-		diffBase = "HEAD"
-	}
+	mode, diffBase, diffBaseRef := s.diffState()
 
 	if root == "" || !gitAvailable(root) {
 		writeJSON(w, map[string]any{
@@ -806,7 +829,7 @@ func (s *Server) handleGitWorktrees(w http.ResponseWriter, r *http.Request) {
 			"baseBranch":   "",
 			"currentMode":  mode,
 			"diffBase":     diffBase,
-			"diffBaseRef":  s.diffBaseRef,
+			"diffBaseRef":  diffBaseRef,
 			"worktreeDir":  "",
 			"autoBaseDiff": autoBaseDiff,
 		})
@@ -831,7 +854,7 @@ func (s *Server) handleGitWorktrees(w http.ResponseWriter, r *http.Request) {
 		"baseBranch":   baseBranch,
 		"currentMode":  mode,
 		"diffBase":     diffBase,
-		"diffBaseRef":  s.diffBaseRef,
+		"diffBaseRef":  diffBaseRef,
 		"worktreeDir":  defaultWorktreeParentDir(mainRoot),
 		"autoBaseDiff": autoBaseDiff,
 	})

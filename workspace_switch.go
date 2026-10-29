@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -85,6 +86,16 @@ func normalizeWorkspacePath(p string) string {
 		return filepath.Clean(resolved)
 	}
 	return filepath.Clean(expanded)
+}
+
+// workspacePathKey returns the key used to de-duplicate workspace paths. The
+// default macOS and Windows file systems ignore case, so ~/Workspace and
+// ~/workspace are one folder there and must not list every repo twice.
+func workspacePathKey(p string) string {
+	if runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		return strings.ToLower(p)
+	}
+	return p
 }
 
 // probeRepoFast inspects dir/.git without spawning a git subprocess.
@@ -275,10 +286,10 @@ func (s *Server) listWorkspaces() map[string]any {
 	seenRoots := make(map[string]bool, len(rawConfigured))
 	for _, r := range rawConfigured {
 		norm := normalizeWorkspacePath(r)
-		if norm == "" || seenRoots[norm] {
+		if norm == "" || seenRoots[workspacePathKey(norm)] {
 			continue
 		}
-		seenRoots[norm] = true
+		seenRoots[workspacePathKey(norm)] = true
 		configuredRoots = append(configuredRoots, norm)
 	}
 
@@ -290,7 +301,8 @@ func (s *Server) listWorkspaces() map[string]any {
 		}
 		norm := normalizeWorkspacePath(it.Path)
 		if norm != "" {
-			wbByPath[norm] = it
+			it.Path = norm
+			wbByPath[workspacePathKey(norm)] = it
 		}
 	}
 
@@ -307,7 +319,8 @@ func (s *Server) listWorkspaces() map[string]any {
 		if cand.Name == "" {
 			cand.Name = filepath.Base(norm)
 		}
-		if existing, ok := byPath[norm]; ok {
+		key := workspacePathKey(norm)
+		if existing, ok := byPath[key]; ok {
 			if existing.RootGroup == "" || existing.RootGroup == "Recent" || existing.RootGroup == "Pinned" {
 				if cand.RootGroup != "" {
 					existing.RootGroup = cand.RootGroup
@@ -331,7 +344,7 @@ func (s *Server) listWorkspaces() map[string]any {
 			return
 		}
 		copyCand := cand
-		byPath[norm] = &copyCand
+		byPath[key] = &copyCand
 	}
 
 	// 1. Scan configured roots (or default candidate roots if none configured).
@@ -345,13 +358,13 @@ func (s *Server) listWorkspaces() map[string]any {
 		seenCand := make(map[string]bool)
 		addCand := func(dir string) {
 			norm := normalizeWorkspacePath(dir)
-			if norm == "" || norm == "/" || seenCand[norm] {
+			if norm == "" || norm == "/" || seenCand[workspacePathKey(norm)] {
 				return
 			}
-			if home, err := os.UserHomeDir(); err == nil && norm == filepath.Clean(home) {
+			if home, err := os.UserHomeDir(); err == nil && workspacePathKey(norm) == workspacePathKey(filepath.Clean(home)) {
 				return
 			}
-			seenCand[norm] = true
+			seenCand[workspacePathKey(norm)] = true
 			candidates = append(candidates, norm)
 		}
 		if currentRoot != "" {
@@ -368,7 +381,8 @@ func (s *Server) listWorkspaces() map[string]any {
 	}
 
 	// 2. Merge pinned and recent directories from workbench history.
-	for normPath, it := range wbByPath {
+	for _, it := range wbByPath {
+		normPath := it.Path
 		st, err := os.Stat(normPath)
 		if err != nil || !st.IsDir() {
 			continue
@@ -409,11 +423,12 @@ func (s *Server) listWorkspaces() map[string]any {
 
 	// 4. Enrich all discovered repos with workbench Pinned / LastOpened metadata.
 	repos := make([]WorkspaceRepo, 0, len(byPath))
-	for normPath, repo := range byPath {
-		if normPath == currentRoot {
+	currentKey := workspacePathKey(currentRoot)
+	for key, repo := range byPath {
+		if currentRoot != "" && key == currentKey {
 			repo.IsCurrent = true
 		}
-		if it, ok := wbByPath[normPath]; ok {
+		if it, ok := wbByPath[key]; ok {
 			if it.Pinned {
 				repo.Pinned = true
 			}
@@ -503,7 +518,7 @@ func (s *Server) SwitchWorkspace(targetPath string) (map[string]any, error) {
 		currentRoot = filepath.Clean(s.ix.Root())
 	}
 
-	if abs != currentRoot {
+	if workspacePathKey(abs) != workspacePathKey(currentRoot) {
 		lspEnabled := true
 		if s.lsp != nil {
 			lspEnabled = s.lsp.Enabled()
@@ -554,7 +569,7 @@ func (s *Server) SwitchWorkspace(targetPath string) (map[string]any, error) {
 		}
 
 		newIx.Build()
-		s.autoConfigureWorktreeDiffBase()
+		s.autoConfigureWorktreeDiffBaseLocked()
 
 		if s.gitWatcher != nil {
 			s.gitWatcher.Reset(newIx)
@@ -638,10 +653,10 @@ func (s *Server) handleWorkspaceRoots(w http.ResponseWriter, r *http.Request) {
 	seen := make(map[string]bool, len(baseRoots)+1)
 	addRoot := func(raw string) {
 		norm := normalizeWorkspacePath(raw)
-		if norm == "" || seen[norm] {
+		if norm == "" || seen[workspacePathKey(norm)] {
 			return
 		}
-		seen[norm] = true
+		seen[workspacePathKey(norm)] = true
 		normalized = append(normalized, norm)
 	}
 
@@ -667,7 +682,7 @@ func (s *Server) handleWorkspaceRoots(w http.ResponseWriter, r *http.Request) {
 		normRem := normalizeWorkspacePath(remRaw)
 		filtered := make([]string, 0, len(normalized))
 		for _, rPath := range normalized {
-			if rPath == normRem || rPath == remRaw || tildePath(rPath) == remRaw {
+			if workspacePathKey(rPath) == workspacePathKey(normRem) || rPath == remRaw || tildePath(rPath) == remRaw {
 				continue
 			}
 			filtered = append(filtered, rPath)
@@ -675,8 +690,14 @@ func (s *Server) handleWorkspaceRoots(w http.ResponseWriter, r *http.Request) {
 		normalized = filtered
 	}
 
+	// Store a newline-separated string: Settings.WorkspaceRoots and the
+	// settings schema both type this key as a string, not an array.
+	var stored any = strings.Join(normalized, "\n")
+	if len(normalized) == 0 {
+		stored = nil
+	}
 	if err := settings.UpdateMap(map[string]any{
-		"workspace.roots": normalized,
+		"workspace.roots": stored,
 	}); err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return

@@ -273,9 +273,9 @@ var Schema = []SchemaItem{
 	{
 		Key:         "workspace.roots",
 		Title:       "Workspace Repository Roots",
-		Description: "Comma- or newline-separated parent directories (e.g. ~/code, ~/work) scanned for Git repositories in the in-app Repository Switcher.",
+		Description: "Parent directories (e.g. ~/code, ~/work), one per line or comma-separated, scanned for Git repositories in the in-app Repository Switcher.",
 		Category:    "Workbench",
-		Type:        "string",
+		Type:        "textarea",
 		Default:     "",
 	},
 	{

@@ -305,3 +305,34 @@ func TestHandleGitDiffBaseAndClaudeReview(t *testing.T) {
 		t.Errorf("autoConfigureWorktreeDiffBase: expected 2 git changes vs main, got %d", count)
 	}
 }
+
+func TestClassifyWorktreeSourceIsStrict(t *testing.T) {
+	cases := []struct {
+		path, branch, want string
+	}{
+		{"/Users/a/repo/.claude/worktrees/session-1", "feature", "claude"},
+		{"/Users/a/repo/wt", "claude/fix-bug", "claude"},
+		{"/Users/a/repo/wt", "fix/worktree-pr-review-3fa314", "claude"},
+		// A repo that merely has "claude" in its path is not a Claude session.
+		{"/Users/a/claude-experiments/repo-wt", "feature", "git"},
+		{"/Users/a/.px0/worktrees/repo/feature", "feature", "px0"},
+	}
+	for _, c := range cases {
+		if got := classifyWorktreeSource(c.path, c.branch, false, nil); got != c.want {
+			t.Errorf("classifyWorktreeSource(%q, %q) = %q, want %q", c.path, c.branch, got, c.want)
+		}
+	}
+}
+
+func TestDefaultWorktreeParentDirSkipsClaudeFolder(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	repo := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repo, ".claude", "worktrees"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := defaultWorktreeParentDir(repo)
+	if filepath.Base(filepath.Dir(got)) == ".claude" {
+		t.Fatalf("default worktree dir must not be inside .claude: %s", got)
+	}
+}

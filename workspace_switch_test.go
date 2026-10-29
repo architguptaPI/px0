@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"px0/internal/settings"
 	"testing"
 )
 
@@ -138,6 +139,10 @@ func TestWorkspaceDiscoveryAndRoots(t *testing.T) {
 	}
 	if len(resp.ConfiguredRoots) != 1 {
 		t.Fatalf("expected 1 configured root, got %v", resp.ConfiguredRoots)
+	}
+	// The key must stay a string so the typed Settings struct can read it.
+	if cfg := settings.Read(); cfg.WorkspaceRoots == nil || *cfg.WorkspaceRoots != normalizeWorkspacePath(rootsContainer) {
+		t.Fatalf("workspace.roots should be stored as a string, got %v", cfg.WorkspaceRoots)
 	}
 
 	found := make(map[string]WorkspaceRepo)
