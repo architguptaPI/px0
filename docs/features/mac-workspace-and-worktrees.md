@@ -13,10 +13,12 @@ The features are on the `explore_px0_features` branch, not on `master`. Build fr
 
 ```bash
 cd ~/Workspace/px0
-git switch explore_px0_features
-git pull
+git fetch origin
+git switch --detach origin/explore_px0_features
 make build
 ```
+
+`--detach` is necessary when another worktree already has `explore_px0_features` checked out. Git does not let two worktrees check out the same branch. To go back to `master` later, run `git switch master`.
 
 To check that your binary has the features, run this. The result must be more than 0:
 
