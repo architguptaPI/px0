@@ -228,6 +228,43 @@ func TestSettingsRawJSON(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRootsAndWorktreeSettings(t *testing.T) {
+	isolateSettings(t)
+
+	// 1. Comma-separated workspace.roots
+	if err := UpdateMap(map[string]any{
+		"workspace.roots":          "~/code, /tmp/work; /tmp/code",
+		"git.worktreeDir":          "/tmp/wt",
+		"git.worktreeAutoBaseDiff": false,
+	}); err != nil {
+		t.Fatalf("UpdateMap failed: %v", err)
+	}
+
+	roots := WorkspaceRootPaths()
+	if len(roots) != 3 || roots[0] != "~/code" || roots[1] != "/tmp/work" || roots[2] != "/tmp/code" {
+		t.Fatalf("unexpected WorkspaceRootPaths from string: %v", roots)
+	}
+
+	s := Read()
+	if s.GitWorktreeDir == nil || *s.GitWorktreeDir != "/tmp/wt" {
+		t.Fatalf("expected GitWorktreeDir=/tmp/wt, got %v", s.GitWorktreeDir)
+	}
+	if s.GitWorktreeAutoBaseDiff == nil || *s.GitWorktreeAutoBaseDiff != false {
+		t.Fatalf("expected GitWorktreeAutoBaseDiff=false, got %v", s.GitWorktreeAutoBaseDiff)
+	}
+
+	// 2. JSON array workspace.roots
+	if err := UpdateMap(map[string]any{
+		"workspace.roots": []string{"/opt/repos", "/srv/git"},
+	}); err != nil {
+		t.Fatalf("UpdateMap slice failed: %v", err)
+	}
+	roots = WorkspaceRootPaths()
+	if len(roots) != 2 || roots[0] != "/opt/repos" || roots[1] != "/srv/git" {
+		t.Fatalf("unexpected WorkspaceRootPaths from array: %v", roots)
+	}
+}
+
 func BenchmarkSettingsReadMergedMap(b *testing.B) {
 	isolateSettingsBenchmark(b)
 	b.ResetTimer()

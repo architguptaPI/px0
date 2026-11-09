@@ -247,6 +247,22 @@ export const DEFAULT_TIPS = [
     shortcut: "Mod+,"
   },
   {
+    id: "workspace-switcher",
+    title: "Instant Single-Window Repository Switcher",
+    category: "Navigation",
+    tag: "Workspaces",
+    content: "Click the repository name in the top-left header or press **`Alt + O`** to fuzzy-search and hot-swap across all repositories under your configured `workspace.roots` in-place without changing ports or URLs.",
+    shortcut: "Alt+O"
+  },
+  {
+    id: "git-worktrees-claude",
+    title: "Git Worktrees & Fast Claude Desktop Review",
+    category: "Git & PRs",
+    tag: "Worktrees",
+    content: "Press **`Alt + Shift + W`** or click the header worktree pill to switch, create, or prune Git worktrees (including `.claude/worktrees`). Linked worktrees automatically diff against their base branch (`main`/`master`) so committed agent changes are immediately visible.",
+    shortcut: "Alt+Shift+W"
+  },
+  {
     id: "all-shortcuts",
     title: "Keyboard Shortcuts Reference",
     category: "Navigation",

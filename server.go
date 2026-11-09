@@ -66,14 +66,21 @@ func cleanBasePath(p string) string {
 // Server is the main px0 HTTP server handling the web UI, static assets,
 // REST API endpoints, Server-Sent Events (SSE), and workspace services.
 type Server struct {
-	ix        *Index
-	lsp       *lspManager
-	tel       *telemetry.Service // nil in tests; Track is nil-safe
-	agent     *agentManager      // nil unless main wires editing for this session
-	threads   *threadManager    // nil unless editing is wired: threads run on the same harness
-	pr        *prSession        // nil unless main launched this process as `px0 pr ...`
-	diffBase  string            // ref /api/diff and /api/gutter diff against; "HEAD" unless in PR mode
-	prHeadSHA string            // PR mode only: the checked-out PR head commit. Frozen boundary between
+	// wsMu guards workspace swaps (SwitchWorkspace) and diff-base writes. Most
+	// request handlers still read s.ix, s.lsp and s.diffBase without it: px0
+	// is a single-user local tool, and a request that overlaps a switch at
+	// worst answers for the old workspace once.
+	wsMu        sync.Mutex
+	ix          *Index
+	lsp         *lspManager
+	tel         *telemetry.Service // nil in tests; Track is nil-safe
+	agent       *agentManager      // nil unless main wires editing for this session
+	threads     *threadManager     // nil unless editing is wired: threads run on the same harness
+	pr          *prSession         // nil unless main launched this process as `px0 pr ...`
+	diffBase    string             // ref /api/diff and /api/gutter diff against; "HEAD" unless in PR mode or base-branch mode
+	diffMode    string             // "head" (default), "base" (merge-base with base branch), or "custom"
+	diffBaseRef string             // base branch or custom ref name when diffMode != "head"
+	prHeadSHA   string             // PR mode only: the checked-out PR head commit. Frozen boundary between
 	// the PR's own diff (diffBase..prHeadSHA) and the reviewer's local edits
 	// since checkout (prHeadSHA..working tree); refreshed on Pull.
 	gitWatcher *GitWatcher
@@ -212,6 +219,7 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/review-workflow/stop"), s.handleReviewWorkflowStop)
 	s.mux.HandleFunc(s.routePath("/api/review-workflow/status"), s.handleReviewWorkflowStatus)
 	s.mux.HandleFunc(s.routePath("/api/review-workflow/stream"), s.handleReviewWorkflowStream)
+	s.mux.HandleFunc(s.routePath("/api/review/walkthrough"), s.handleReviewWalkthrough)
 	s.mux.HandleFunc(s.routePath("/api/settings"), s.handleSettings)
 	s.mux.HandleFunc(s.routePath("/api/pr/meta"), s.handlePRMeta)
 	s.mux.HandleFunc(s.routePath("/api/pr/comments"), s.handlePRComments)
@@ -226,6 +234,14 @@ func (s *Server) registerRoutes() {
 	s.mux.HandleFunc(s.routePath("/api/pr/merge-message"), s.handlePRMergeMessage)
 	s.mux.HandleFunc(s.routePath("/api/forge/connect"), s.handleForgeConnect)
 	s.mux.HandleFunc(s.routePath("/api/session"), s.handleSession)
+	s.mux.HandleFunc(s.routePath("/api/workspaces"), s.handleWorkspaces)
+	s.mux.HandleFunc(s.routePath("/api/workspaces/switch"), s.handleWorkspaceSwitch)
+	s.mux.HandleFunc(s.routePath("/api/workspaces/roots"), s.handleWorkspaceRoots)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees"), s.handleGitWorktrees)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees/create"), s.handleGitWorktreeCreate)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees/remove"), s.handleGitWorktreeRemove)
+	s.mux.HandleFunc(s.routePath("/api/git/worktrees/prune"), s.handleGitWorktreePrune)
+	s.mux.HandleFunc(s.routePath("/api/git/diff-base"), s.handleGitDiffBase)
 }
 
 // NewServer creates and initializes a px0 Server instance, binding index and language servers,
@@ -238,7 +254,7 @@ func NewServer(ix *Index, lsp *lspManager, basePaths ...string) *Server {
 	if len(basePaths) > 0 && basePaths[0] != "" {
 		bp = cleanBasePath(basePaths[0])
 	}
-	s := &Server{ix: ix, lsp: lsp, diffBase: "HEAD", basePath: bp, mux: http.NewServeMux(), streamsDone: make(chan struct{})}
+	s := &Server{ix: ix, lsp: lsp, diffBase: "HEAD", diffMode: "head", basePath: bp, mux: http.NewServeMux(), streamsDone: make(chan struct{})}
 	s.session = newSessionManager(s.basePath, ix.Root())
 	s.gitWatcher = NewGitWatcher(ix)
 	s.gitWatcher.Start(context.Background())
@@ -922,7 +938,7 @@ func (s *Server) handleStatic(sub fs.FS, prefix string) http.Handler {
 	})
 }
 
-func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+func (s *Server) buildMetaMap() map[string]any {
 	n, at, ms := s.ix.Stats()
 	inGit := gitAvailable(s.ix.Root())
 	if inGit && s.ix.Ready() {
@@ -934,6 +950,7 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	gitCount, gitFiles := s.ix.GitChanges()
+	diffMode, diffBase, diffBaseRef := s.diffState()
 	meta := map[string]any{
 		"root":        s.ix.Root(),
 		"name":        filepath.Base(s.ix.Root()),
@@ -944,6 +961,9 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 		"git":         inGit,
 		"gitChanges":  gitCount,
 		"gitFiles":    gitFiles,
+		"diffBase":    diffBase,
+		"diffMode":    diffMode,
+		"diffBaseRef": diffBaseRef,
 		"forge":       s.forgeMeta(),
 		"lspServers":  s.lsp.Available(),
 		"metrics":     getProcessMetrics(s.lsp),
@@ -958,7 +978,11 @@ func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
 	if s.pr != nil {
 		meta["pr"] = s.pr.metaMap(s.ix.PRFiles())
 	}
-	writeJSON(w, meta)
+	return meta
+}
+
+func (s *Server) handleMeta(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.buildMetaMap())
 }
 
 func getProcessMetrics(lsp *lspManager) metrics.ProcessMetrics {
@@ -1694,6 +1718,16 @@ func (s *Server) handleGutter(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleEventStream streams real-time workspace events (git status notifications and process metrics) via Server-Sent Events (SSE).
+//
+// It is the one long-lived connection a tab holds. Browsers allow only six
+// HTTP/1.1 connections per host, shared by every tab, so each extra
+// EventSource is one fewer slot for ordinary requests; once they are all
+// parked on streams, every fetch queues forever and the UI stops loading.
+// Other live feeds therefore ride along here, opted into by query:
+//
+//	threads=1    thread list events, as threads:<event>
+//	thread=<id>  one thread's events, as thread:<event> {"id":..,"data":..}; repeatable
+//	review=1     review workflow events, as review:<event>
 func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -1729,7 +1763,15 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 	}
 
-	// 3. Periodic metrics ticker (2500ms) for unified stream
+	// 3. Optional feeds, fanned into one channel. A feed whose channel closes
+	// under us (a slow subscriber dropped by its publisher) ends the stream,
+	// so the client reconnects and resyncs from fresh snapshots.
+	feed, lost, ok := s.subscribeStreamFeeds(r, w, flusher)
+	if !ok {
+		return
+	}
+
+	// 4. Periodic metrics ticker (2500ms) for unified stream
 	var metricsTicker *time.Ticker
 	var metricsC <-chan time.Time
 	if includeMetrics {
@@ -1738,7 +1780,7 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 		metricsC = metricsTicker.C
 	}
 
-	// 4. Heartbeat ticker (15s) in case gitWatcher is disabled or not ticking
+	// 5. Heartbeat ticker (15s) in case gitWatcher is disabled or not ticking
 	heartbeatTicker := time.NewTicker(15 * time.Second)
 	defer heartbeatTicker.Stop()
 
@@ -1748,11 +1790,19 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-s.streamsDone:
 			return
+		case <-lost:
+			return
 
 		case msg, ok := <-gitCh:
 			if !ok {
 				return
 			}
+			if _, err := w.Write(msg); err != nil {
+				return
+			}
+			flusher.Flush()
+
+		case msg := <-feed:
 			if _, err := w.Write(msg); err != nil {
 				return
 			}
@@ -1773,6 +1823,130 @@ func (s *Server) handleEventStream(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// subscribeStreamFeeds subscribes to the optional feeds named in r's query,
+// writes their initial snapshots to w, and returns a channel of ready-to-write
+// frames plus a channel that closes when any feed is lost. The subscriptions
+// end with r's context. ok is false if writing a snapshot failed.
+func (s *Server) subscribeStreamFeeds(r *http.Request, w io.Writer, flusher http.Flusher) (feed <-chan []byte, lost <-chan struct{}, ok bool) {
+	ctx := r.Context()
+	q := r.URL.Query()
+	out := make(chan []byte, 64)
+	lostCh := make(chan struct{})
+	var lostOnce sync.Once
+	markLost := func() { lostOnce.Do(func() { close(lostCh) }) }
+
+	var snapshots []byte
+	forward := func(frames <-chan []byte) {
+		go func() {
+			for f := range frames {
+				select {
+				case out <- f:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if ctx.Err() == nil {
+				markLost()
+			}
+		}()
+	}
+
+	// threadFrames adapts a thread subscription; per-thread events carry
+	// their id so one connection can follow several threads.
+	threadFrames := func(id string, ch chan threadEvent, first threadEvent, unsub func()) {
+		frame := func(ev threadEvent) []byte {
+			if id == "" {
+				return []byte(fmt.Sprintf("event: threads:%s\ndata: %s\n\n", ev.name, ev.data))
+			}
+			env, _ := json.Marshal(struct {
+				ID   string          `json:"id"`
+				Data json.RawMessage `json:"data"`
+			}{id, ev.data})
+			return []byte(fmt.Sprintf("event: thread:%s\ndata: %s\n\n", ev.name, env))
+		}
+		snapshots = append(snapshots, frame(first)...)
+		frames := make(chan []byte)
+		go func() {
+			defer close(frames)
+			defer unsub()
+			for {
+				select {
+				case ev, open := <-ch:
+					if !open {
+						return
+					}
+					select {
+					case frames <- frame(ev):
+					case <-ctx.Done():
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		forward(frames)
+	}
+
+	if s.threads != nil {
+		if q.Get("threads") == "1" {
+			ch, first, unsub, _ := s.threads.subscribe("")
+			threadFrames("", ch, first, unsub)
+		}
+		seen := map[string]bool{}
+		for _, id := range q["thread"] {
+			if id == "" || seen[id] {
+				continue
+			}
+			seen[id] = true
+			ch, first, unsub, found := s.threads.subscribe(id)
+			if !found {
+				// Gone while the client was away: say so, so it stops asking.
+				env, _ := json.Marshal(map[string]any{"id": id, "data": map[string]string{"id": id}})
+				snapshots = append(snapshots, fmt.Sprintf("event: thread:deleted\ndata: %s\n\n", env)...)
+				continue
+			}
+			threadFrames(id, ch, first, unsub)
+		}
+	}
+
+	if s.reviewFlow != nil && q.Get("review") == "1" {
+		ch, unsub := s.reviewFlow.subscribe()
+		if runData, err := json.Marshal(s.reviewFlow.getRun()); err == nil {
+			snapshots = append(snapshots, fmt.Sprintf("event: review:snapshot\ndata: %s\n\n", runData)...)
+		}
+		frames := make(chan []byte)
+		go func() {
+			defer close(frames)
+			defer unsub()
+			for {
+				select {
+				case ev, open := <-ch:
+					if !open {
+						return
+					}
+					select {
+					case frames <- []byte(fmt.Sprintf("event: review:%s\ndata: %s\n\n", ev.Name, ev.Data)):
+					case <-ctx.Done():
+						return
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+		forward(frames)
+	}
+
+	if len(snapshots) > 0 {
+		if _, err := w.Write(snapshots); err != nil {
+			return nil, nil, false
+		}
+		flusher.Flush()
+	}
+	return out, lostCh, true
 }
 
 // handleGitRefresh triggers an immediate git status check and returns the latest git summary.

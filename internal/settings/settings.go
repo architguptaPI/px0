@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -43,6 +44,9 @@ type Settings struct {
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
 	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
 	TipsEnabled                 *bool    `json:"tips.enabled,omitempty"`
+	WorkspaceRoots              *string  `json:"workspace.roots,omitempty"`
+	GitWorktreeDir              *string  `json:"git.worktreeDir,omitempty"`
+	GitWorktreeAutoBaseDiff     *bool    `json:"git.worktreeAutoBaseDiff,omitempty"`
 }
 
 var settingsMu sync.Mutex
@@ -267,6 +271,14 @@ var Schema = []SchemaItem{
 		Default:     true,
 	},
 	{
+		Key:         "workspace.roots",
+		Title:       "Workspace Repository Roots",
+		Description: "Parent directories (e.g. ~/code, ~/work), one per line or comma-separated, scanned for Git repositories in the in-app Repository Switcher.",
+		Category:    "Workbench",
+		Type:        "textarea",
+		Default:     "",
+	},
+	{
 		Key:         "files.exclude",
 		Title:       "Files Exclude Patterns",
 		Description: "Configure glob patterns for excluding files and folders from search and trees.",
@@ -359,6 +371,22 @@ var Schema = []SchemaItem{
 		Category:    "Git & Diff",
 		Type:        "textarea",
 		Default:     "",
+	},
+	{
+		Key:         "git.worktreeDir",
+		Title:       "Default Worktree Directory",
+		Description: "Parent directory where new Git worktrees are created when no explicit path is given (e.g. ~/.px0/worktrees or .claude/worktrees).",
+		Category:    "Git & Diff",
+		Type:        "string",
+		Default:     "",
+	},
+	{
+		Key:         "git.worktreeAutoBaseDiff",
+		Title:       "Worktree: Auto Diff Against Base Branch",
+		Description: "When opening or switching to a Git worktree with commits ahead of the base branch (e.g. Claude Desktop sessions), automatically diff against the base branch merge-base so committed branch changes are visible.",
+		Category:    "Git & Diff",
+		Type:        "boolean",
+		Default:     true,
 	},
 	{
 		Key:         "github.token",
@@ -720,6 +748,42 @@ func UpdateMap(updates map[string]any) error {
 	}
 
 	return writeRawMapLocked(p, raw)
+}
+
+// WorkspaceRootPaths returns the configured workspace root directories from settings,
+// accepting either a comma/newline-separated string or a JSON array in "workspace.roots".
+func WorkspaceRootPaths() []string {
+	raw := ReadRawMap()
+	v, ok := raw["workspace.roots"]
+	if !ok || v == nil {
+		return nil
+	}
+	var parts []string
+	switch val := v.(type) {
+	case string:
+		for _, tok := range strings.FieldsFunc(val, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\r' || r == ';'
+		}) {
+			if t := strings.TrimSpace(tok); t != "" {
+				parts = append(parts, t)
+			}
+		}
+	case []any:
+		for _, item := range val {
+			if s, ok := item.(string); ok {
+				if t := strings.TrimSpace(s); t != "" {
+					parts = append(parts, t)
+				}
+			}
+		}
+	case []string:
+		for _, s := range val {
+			if t := strings.TrimSpace(s); t != "" {
+				parts = append(parts, t)
+			}
+		}
+	}
+	return parts
 }
 
 // SaveRawJSON parses and validates raw JSON text and writes it formatted.
