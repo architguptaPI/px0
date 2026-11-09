@@ -5,6 +5,34 @@ This guide is for this fork. It covers two features:
 1. One px0 window for all your repositories. You switch between them in place.
 2. Git worktrees. You open a Claude Desktop session's worktree and see all of its changes against the base branch.
 
+## Quick setup: run px0 in the background
+
+This one command builds px0 and installs it as a macOS login service. You do not need a terminal tab for px0 after that. Run it in your px0 checkout, and put the repos that you want pinned after the script name:
+
+```bash
+git fetch origin && git switch --detach origin/explore_px0_features && ./scripts/setup-mac.sh ~/code/api ~/code/web
+```
+
+The script does these steps:
+
+1. It builds px0 and installs it at `~/.local/bin/px0`.
+2. It stops each px0 that runs now.
+3. It writes `~/Library/LaunchAgents/com.px0.workbench.plist`. macOS then starts the px0 workbench at login and starts it again if it crashes. The service uses `-no-update`.
+4. It pins each repo that you give as an argument. With no arguments, it pins nothing. Repos that you pinned before stay pinned.
+5. It opens `http://127.0.0.1:7777`.
+
+The service copies your shell's `PATH` when you run the script, so px0 finds git, language servers and `claude`. If you install a new tool, run the script again.
+
+To update px0 after new commits, run the same command again. To remove the service, run this in your px0 checkout:
+
+```bash
+./scripts/setup-mac.sh --uninstall
+```
+
+The log is at `~/.px0/com.px0.workbench.log`.
+
+The rest of this guide explains each step and feature.
+
 ## 1. Build and install
 
 You need Go, Node and Git. Homebrew gives you all three.
@@ -12,7 +40,7 @@ You need Go, Node and Git. Homebrew gives you all three.
 The features are on the `explore_px0_features` branch, not on `master`. Build from that branch. If you build from `master`, Option+O and Option+Shift+W do nothing.
 
 ```bash
-cd ~/Workspace/px0
+cd ~/code/px0
 git fetch origin
 git switch --detach origin/explore_px0_features
 make build
@@ -62,7 +90,7 @@ You can start px0 in two ways. Both work with these features.
 Start px0 on any repository:
 
 ```bash
-px0 ~/Workspace/px0
+px0 ~/code/px0
 ```
 
 px0 opens `http://127.0.0.1:7777` in your browser. Keep the terminal tab open. Press Ctrl+C in it to stop px0.
@@ -70,7 +98,7 @@ px0 opens `http://127.0.0.1:7777` in your browser. Keep the terminal tab open. P
 To run px0 without a terminal tab, start it in the background:
 
 ```bash
-nohup px0 -no-open ~/Workspace/px0 > ~/.px0/server.log 2>&1 &
+nohup px0 -no-open ~/code/px0 > ~/.px0/server.log 2>&1 &
 ```
 
 Then open `http://127.0.0.1:7777` yourself. To stop it, run `pkill -x px0`.
@@ -87,7 +115,7 @@ To set your own folders, do one of these:
 
 ```json
 {
-  "workspace.roots": "~/Workspace\n~/Workspace/Personal"
+  "workspace.roots": "~/code\n~/work"
 }
 ```
 
