@@ -549,6 +549,11 @@ func (s *Server) SwitchWorkspace(targetPath string) (map[string]any, error) {
 			return nil, fmt.Errorf("workspace path is not a directory: %s", abs)
 		}
 	}
+	// The index builds before the switch returns, with wsMu held. A disk root
+	// or home folder would block the server for minutes, so refuse them.
+	if isTooBroadWorkspace(abs) {
+		return nil, fmt.Errorf("refusing to open %s as a workspace: pick a repository folder", tildePath(abs))
+	}
 
 	s.wsMu.Lock()
 	currentRoot := ""
@@ -625,6 +630,19 @@ func (s *Server) SwitchWorkspace(targetPath string) (map[string]any, error) {
 	}
 
 	return s.buildMetaMap(), nil
+}
+
+// isTooBroadWorkspace reports whether dir is a file system root or the
+// user's home folder.
+func isTooBroadWorkspace(dir string) bool {
+	dir = filepath.Clean(dir)
+	if dir == filepath.Dir(dir) {
+		return true
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return workspacePathKey(dir) == workspacePathKey(normalizeWorkspacePath(home))
+	}
+	return false
 }
 
 // handleWorkspaces serves GET /api/workspaces.

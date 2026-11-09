@@ -275,3 +275,20 @@ func TestCanonicalPathCase(t *testing.T) {
 		t.Fatalf("missing path should come back unchanged, got %q", got)
 	}
 }
+
+func TestSwitchWorkspaceRefusesBroadFolders(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	cur := t.TempDir()
+	srv := NewServer(NewIndex(cur), newLSPManager(cur, false), "")
+	for _, p := range []string{"/", "~", home} {
+		if _, err := srv.SwitchWorkspace(p); err == nil {
+			t.Errorf("SwitchWorkspace(%q) should be refused", p)
+		}
+	}
+	if got := srv.ix.Root(); got != cur {
+		t.Fatalf("root changed to %q after refused switches", got)
+	}
+}
