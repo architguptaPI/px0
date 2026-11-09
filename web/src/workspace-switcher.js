@@ -159,7 +159,9 @@ function injectStyles() {
       display: flex;
       align-items: center;
       gap: 6px;
-      flex-shrink: 0;
+      min-width: 0;
+      max-width: 55%;
+      overflow: hidden;
     }
     .ws-badge {
       font-size: 10.5px;
@@ -171,6 +173,10 @@ function injectStyles() {
       color: var(--fg-dim);
       background: rgba(128, 128, 128, 0.07);
       white-space: nowrap;
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 0;
     }
     .ws-badge-current {
       color: var(--accent, #58a6ff);
@@ -500,7 +506,7 @@ function renderRepoList() {
         badges.push(`<span class="ws-badge ws-badge-branch" title="Branch: ${esc(r.branch)}">⎇ ${esc(r.branch)}</span>`);
       }
       if (r.rootGroup && !r.isCurrent) {
-        badges.push(`<span class="ws-badge">${esc(r.rootGroup)}</span>`);
+        badges.push(`<span class="ws-badge" title="${esc(r.rootGroup)}">${esc(r.rootGroup)}</span>`);
       }
 
       return `

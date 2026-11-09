@@ -98,6 +98,39 @@ func workspacePathKey(p string) string {
 	return p
 }
 
+// canonicalPathCase returns p with each part spelled as it is on disk. On a
+// case-insensitive file system, "~/workspace" opens "~/Workspace", but the
+// workbench page ID and recent history key on the path text, so one repo
+// would get two IDs. It returns p unchanged elsewhere or on any error.
+func canonicalPathCase(p string) string {
+	if p == "" || (runtime.GOOS != "darwin" && runtime.GOOS != "windows") || !filepath.IsAbs(p) {
+		return p
+	}
+	vol := filepath.VolumeName(p)
+	out := vol + string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(p[len(vol):], string(filepath.Separator)), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		entries, err := os.ReadDir(out)
+		if err != nil {
+			return p
+		}
+		name := part
+		for _, e := range entries {
+			if e.Name() == part {
+				name = part
+				break
+			}
+			if strings.EqualFold(e.Name(), part) {
+				name = e.Name()
+			}
+		}
+		out = filepath.Join(out, name)
+	}
+	return out
+}
+
 // probeRepoFast inspects dir/.git without spawning a git subprocess.
 // It supports both standard .git directories and linked worktree .git files.
 func probeRepoFast(dir string) (isGit bool, isWorktree bool, branch string) {
@@ -210,7 +243,7 @@ func scanWorktreeContainers(repoDir, group string, emit func(WorkspaceRepo)) {
 
 // scanWorkspaceRoot walks rootDir up to maxDepth levels looking for git repositories.
 func scanWorkspaceRoot(rootDir, group string, maxDepth int, emit func(WorkspaceRepo)) {
-	rootDir = normalizeWorkspacePath(rootDir)
+	rootDir = canonicalPathCase(normalizeWorkspacePath(rootDir))
 	if rootDir == "" {
 		return
 	}
@@ -365,7 +398,7 @@ func (s *Server) listWorkspaces() map[string]any {
 				return
 			}
 			seenCand[workspacePathKey(norm)] = true
-			candidates = append(candidates, norm)
+			candidates = append(candidates, canonicalPathCase(norm))
 		}
 		if currentRoot != "" {
 			addCand(filepath.Dir(currentRoot))
@@ -503,7 +536,7 @@ func (s *Server) SwitchWorkspace(targetPath string) (map[string]any, error) {
 	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
 		abs = resolved
 	}
-	abs = filepath.Clean(abs)
+	abs = canonicalPathCase(filepath.Clean(abs))
 
 	st, err := os.Stat(abs)
 	if err != nil {

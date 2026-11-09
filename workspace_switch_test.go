@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"px0/internal/settings"
+	"runtime"
 	"testing"
 )
 
@@ -247,5 +248,30 @@ func TestWorkspaceSwitchInPlace(t *testing.T) {
 	}
 	if len(treeResp.Children) != 1 || treeResp.Children[0].Path != "beta.txt" {
 		t.Fatalf("expected [beta.txt] after switch, got %+v", treeResp.Children)
+	}
+}
+
+func TestCanonicalPathCase(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		t.Skip("case-insensitive file systems only")
+	}
+	root := t.TempDir()
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
+	real := filepath.Join(root, "MixedCase", "Repo")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lower := filepath.Join(root, "mixedcase", "repo")
+	if _, err := os.Stat(lower); err != nil {
+		t.Skip("file system is case-sensitive")
+	}
+	if got := canonicalPathCase(lower); got != real {
+		t.Fatalf("canonicalPathCase(%q) = %q, want %q", lower, got, real)
+	}
+	missing := filepath.Join(root, "nope", "x")
+	if got := canonicalPathCase(missing); got != missing {
+		t.Fatalf("missing path should come back unchanged, got %q", got)
 	}
 }
