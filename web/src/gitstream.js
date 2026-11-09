@@ -8,17 +8,12 @@ import { updateStatus, updateMetricsDisplay } from './status.js';
 import { updateGitPanel } from './gitpanel.js';
 import { refreshUnpushed } from './unpushed.js';
 import { updateScopeCounts } from './prscope.js';
+import { onStream, openStream, closeStream, streamOpen, streamTrafficAt } from './stream.js';
 
-let eventSource = null;
 let reconnectTimer = null;
 let lastSig = '';
 let refreshing = null;
 let lastRefreshAt = 0;
-let lastTrafficAt = Date.now();
-
-function markTraffic() {
-  lastTrafficAt = Date.now();
-}
 
 function reconnect() {
   disconnect();
@@ -32,6 +27,12 @@ async function handleWake() {
 }
 
 export function initGitStream() {
+  onStream('git-status', handleGitStatus);
+  onStream('metrics', updateMetricsDisplay);
+  onStream('workspace-switched', data => {
+    lastSig = '';
+    emit('workspace:switched', data);
+  });
   connect();
 
   // Instant refresh when user focuses the browser window
@@ -39,7 +40,7 @@ export function initGitStream() {
     if (document.visibilityState === 'visible') {
       const now = Date.now();
       // If the connection is closed, or if no SSE traffic has arrived for >5s, reconnect
-      if (!eventSource || eventSource.readyState !== EventSource.OPEN || (now - lastTrafficAt > 5000)) {
+      if (!streamOpen() || (now - streamTrafficAt() > 5000)) {
         handleWake();
       } else {
         triggerRefresh();
@@ -71,14 +72,18 @@ export function initGitStream() {
     }
 
     // 2. Stream watchdog: if tab is visible and no SSE events arrived for >12s, reconnect
-    if (document.visibilityState === 'visible' && (now - lastTrafficAt > 12000)) {
+    if (document.visibilityState === 'visible' && (now - streamTrafficAt() > 12000)) {
       handleWake();
     }
   }, 1000);
 }
 
+// After an in-place workspace switch: forget the last snapshot and reopen
+// the shared stream, so its thread and review feeds attach to the new
+// workspace's managers instead of the closed ones.
 export function resetGitStreamState() {
   lastSig = '';
+  reconnect();
 }
 
 export function triggerRefresh() {
@@ -101,62 +106,16 @@ export function triggerRefresh() {
 }
 
 function connect() {
-  if (eventSource && eventSource.readyState !== EventSource.CLOSED) return;
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-
   try {
-    const streamUrl = new URL('api/stream', document.baseURI || location.href).href;
-    eventSource = new EventSource(streamUrl);
-    markTraffic();
-
-    eventSource.onopen = () => {
-      markTraffic();
-    };
-
-    eventSource.addEventListener('git-status', async e => {
-      markTraffic();
-      try {
-        const data = JSON.parse(e.data);
-        await handleGitStatus(data);
-      } catch (err) {
-        // Drop malformed frame
-      }
-    });
-
-    eventSource.addEventListener('metrics', e => {
-      markTraffic();
-      try {
-        const data = JSON.parse(e.data);
-        updateMetricsDisplay(data);
-      } catch (err) {
-        // Drop malformed frame
-      }
-    });
-
-    eventSource.addEventListener('workspace-switched', e => {
-      markTraffic();
-      lastSig = '';
-      try {
-        const data = JSON.parse(e.data);
-        emit('workspace:switched', data);
-      } catch (err) {
-        // Drop malformed frame
-      }
-    });
-
-    eventSource.addEventListener('ping', () => {
-      markTraffic();
-    });
-
-    eventSource.onerror = () => {
-      disconnect();
+    openStream(() => {
       if (document.visibilityState === 'visible') {
         reconnectTimer = setTimeout(connect, 1500);
       }
-    };
+    });
   } catch (err) {
     // Fallback if EventSource fails to construct
   }
@@ -167,10 +126,7 @@ function disconnect() {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
-  if (eventSource) {
-    eventSource.close();
-    eventSource = null;
-  }
+  closeStream();
 }
 
 export async function handleGitStatus(data) {
@@ -205,12 +161,13 @@ export async function handleGitStatus(data) {
   const statuses = data.statuses || {};
   const dirtyDirs = data.dirtyDirs || {};
   const staged = data.staged || {};
+  const partial = data.partial || {};
   const yourStatuses = data.yourStatuses || {};
   const yourDirtyDirs = data.yourDirtyDirs || {};
 
   // Patch rendered tree items in place without full DOM reload
   try {
-    await patchTreeGitStatus(statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs);
+    await patchTreeGitStatus(statuses, dirtyDirs, staged, yourStatuses, yourDirtyDirs, partial);
   } catch (err) {
     console.error('Failed to patch tree git status', err);
   }
