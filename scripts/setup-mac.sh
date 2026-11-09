@@ -40,7 +40,7 @@ fi
 echo "==> Building px0 from $REPO_DIR"
 INSTALL_PATH="$BIN" make -C "$REPO_DIR" install >/dev/null
 if ! strings "$BIN" | grep -c api/workspaces/switch >/dev/null; then
-    echo "The build has no repo switching. Check out the explore_px0_features branch and run again." >&2
+    echo "The build has no repo switching. Build from master of this fork and run again." >&2
     exit 1
 fi
 

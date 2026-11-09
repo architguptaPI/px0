@@ -10,7 +10,7 @@ This guide is for this fork. It covers two features:
 This one command builds px0 and installs it as a macOS login service. You do not need a terminal tab for px0 after that. Run it in your px0 checkout, and put the repos that you want pinned after the script name:
 
 ```bash
-git fetch origin && git switch --detach origin/explore_px0_features && ./scripts/setup-mac.sh ~/code/api ~/code/web
+git pull && ./scripts/setup-mac.sh ~/code/api ~/code/web
 ```
 
 The script does these steps:
@@ -37,16 +37,14 @@ The rest of this guide explains each step and feature.
 
 You need Go, Node and Git. Homebrew gives you all three.
 
-The features are on the `explore_px0_features` branch, not on `master`. Build from that branch. If you build from `master`, Option+O and Option+Shift+W do nothing.
+Build from `master` of this fork. The upstream project does not have these features: an upstream build makes Option+O and Option+Shift+W do nothing.
 
 ```bash
 cd ~/code/px0
-git fetch origin
-git switch --detach origin/explore_px0_features
+git switch master
+git pull
 make build
 ```
-
-`--detach` is necessary when another worktree already has `explore_px0_features` checked out. Git does not let two worktrees check out the same branch. To go back to `master` later, run `git switch master`.
 
 To check that your binary has the features, run this. The result must be more than 0:
 
